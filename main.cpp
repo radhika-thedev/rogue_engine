@@ -4,7 +4,7 @@
 #include <algorithm>
 #include <random>
 #include <cstdint>
-#include <conio.h> // Windows immediate console input
+#include <conio.h>
 
 enum class TileType {
     Empty,
@@ -36,6 +36,7 @@ struct PointHash {
 class SpatialGrid {
 private:
     std::unordered_map<Point, TileType, PointHash> grid;
+    std::unordered_map<Point, bool, PointHash> explored;
 
 public:
     void setTile(const Point& p, TileType type) {
@@ -59,6 +60,15 @@ public:
         return (t == TileType::Floor);
     }
 
+    void markExplored(const Point& p) {
+        explored[p] = true;
+    }
+
+    bool isExplored(const Point& p) const {
+        auto it = explored.find(p);
+        return it != explored.end() && it->second;
+    }
+
     std::size_t totalOccupiedCells() const { return grid.size(); }
 };
 
@@ -78,6 +88,7 @@ struct Rect {
 
 const int MAP_WIDTH = 45;
 const int MAP_HEIGHT = 18;
+const int FOV_RADIUS = 5;
 
 void carveRoom(const Rect& room, SpatialGrid& dungeon) {
     for (int y = room.y; y < room.y + room.h; ++y) {
@@ -103,24 +114,49 @@ void carveVerticalCorridor(int y1, int y2, int x, SpatialGrid& dungeon) {
     }
 }
 
+// Compute visibility and record explored tiles
+void updateFOV(SpatialGrid& dungeon, const Point& playerPos) {
+    for (int dy = -FOV_RADIUS; dy <= FOV_RADIUS; ++dy) {
+        for (int dx = -FOV_RADIUS; dx <= FOV_RADIUS; ++dx) {
+            if (dx * dx + dy * dy <= FOV_RADIUS * FOV_RADIUS) {
+                Point p(playerPos.x + dx, playerPos.y + dy);
+                if (p.x >= 0 && p.x < MAP_WIDTH && p.y >= 0 && p.y < MAP_HEIGHT) {
+                    dungeon.markExplored(p);
+                }
+            }
+        }
+    }
+}
+
 void renderDungeon(const SpatialGrid& dungeon, const Point& playerPos) {
-    // Clear screen for a smooth console update
     std::cout << "\033[2J\033[H"; 
-    std::cout << "=== Roguelike Engine: WASD to Move, Q to Quit ===\n";
-    std::cout << "Player Pos: (" << playerPos.x << ", " << playerPos.y << ")\n\n";
+    std::cout << "=== Roguelike Engine with FOV (Radius: " << FOV_RADIUS << ") ===\n";
+    std::cout << "WASD to Move | Q to Quit | Pos: (" << playerPos.x << ", " << playerPos.y << ")\n\n";
 
     for (int y = 0; y < MAP_HEIGHT; ++y) {
         for (int x = 0; x < MAP_WIDTH; ++x) {
             Point p(x, y);
+
             if (p == playerPos) {
                 std::cout << "@";
-            } else {
+                continue;
+            }
+
+            int dx = x - playerPos.x;
+            int dy = y - playerPos.y;
+            bool inView = (dx * dx + dy * dy <= FOV_RADIUS * FOV_RADIUS);
+
+            if (inView) {
+                // In direct line of sight
                 TileType t = dungeon.getTile(p);
-                if (t == TileType::Floor) {
-                    std::cout << ".";
-                } else {
-                    std::cout << "#";
-                }
+                std::cout << (t == TileType::Floor ? "." : "#");
+            } else if (dungeon.isExplored(p)) {
+                // Previously seen, but currently out of sight (Fog of War)
+                TileType t = dungeon.getTile(p);
+                std::cout << (t == TileType::Floor ? "," : "#");
+            } else {
+                // Complete darkness
+                std::cout << " ";
             }
         }
         std::cout << "\n";
@@ -176,9 +212,9 @@ int main() {
     }
 
     Point playerPos(rooms[0].centerX(), rooms[0].centerY());
+    updateFOV(dungeon, playerPos);
     renderDungeon(dungeon, playerPos);
 
-    // Interactive game loop
     bool running = true;
     while (running) {
         char key = _getch();
@@ -190,13 +226,13 @@ int main() {
         else if (key == 'd' || key == 'D') nextPos.x += 1;
         else if (key == 'q' || key == 'Q') {
             running = false;
-            std::cout << "\nGame Exited.\n";
+            std::cout << "\nEngine Exited Cleanly.\n";
             break;
         }
 
-        // Collision check against spatial hash grid
         if (dungeon.isWalkable(nextPos)) {
             playerPos = nextPos;
+            updateFOV(dungeon, playerPos);
         }
 
         renderDungeon(dungeon, playerPos);
