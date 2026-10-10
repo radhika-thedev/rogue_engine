@@ -4,6 +4,7 @@
 #include <algorithm>
 #include <random>
 #include <cstdint>
+#include <conio.h> // Windows immediate console input
 
 enum class TileType {
     Empty,
@@ -50,7 +51,7 @@ public:
         if (it != grid.end()) {
             return it->second;
         }
-        return TileType::Wall; // Everything outside carved space is solid rock
+        return TileType::Wall;
     }
 
     bool isWalkable(const Point& p) const {
@@ -102,6 +103,30 @@ void carveVerticalCorridor(int y1, int y2, int x, SpatialGrid& dungeon) {
     }
 }
 
+void renderDungeon(const SpatialGrid& dungeon, const Point& playerPos) {
+    // Clear screen for a smooth console update
+    std::cout << "\033[2J\033[H"; 
+    std::cout << "=== Roguelike Engine: WASD to Move, Q to Quit ===\n";
+    std::cout << "Player Pos: (" << playerPos.x << ", " << playerPos.y << ")\n\n";
+
+    for (int y = 0; y < MAP_HEIGHT; ++y) {
+        for (int x = 0; x < MAP_WIDTH; ++x) {
+            Point p(x, y);
+            if (p == playerPos) {
+                std::cout << "@";
+            } else {
+                TileType t = dungeon.getTile(p);
+                if (t == TileType::Floor) {
+                    std::cout << ".";
+                } else {
+                    std::cout << "#";
+                }
+            }
+        }
+        std::cout << "\n";
+    }
+}
+
 int main() {
     SpatialGrid dungeon;
     std::mt19937 rng(1337);
@@ -150,27 +175,31 @@ int main() {
         }
     }
 
-    // Spawn Player in the center of the first generated room
     Point playerPos(rooms[0].centerX(), rooms[0].centerY());
-    dungeon.setTile(playerPos, TileType::Player);
+    renderDungeon(dungeon, playerPos);
 
-    std::cout << "Dungeon generated into SpatialGrid (" << dungeon.totalOccupiedCells() 
-              << " active cells in memory):\n\n";
+    // Interactive game loop
+    bool running = true;
+    while (running) {
+        char key = _getch();
+        Point nextPos = playerPos;
 
-    for (int y = 0; y < MAP_HEIGHT; ++y) {
-        for (int x = 0; x < MAP_WIDTH; ++x) {
-            Point p(x, y);
-            TileType t = dungeon.getTile(p);
-
-            if (t == TileType::Player) {
-                std::cout << "@";
-            } else if (t == TileType::Floor) {
-                std::cout << ".";
-            } else {
-                std::cout << "#";
-            }
+        if (key == 'w' || key == 'W') nextPos.y -= 1;
+        else if (key == 's' || key == 'S') nextPos.y += 1;
+        else if (key == 'a' || key == 'A') nextPos.x -= 1;
+        else if (key == 'd' || key == 'D') nextPos.x += 1;
+        else if (key == 'q' || key == 'Q') {
+            running = false;
+            std::cout << "\nGame Exited.\n";
+            break;
         }
-        std::cout << "\n";
+
+        // Collision check against spatial hash grid
+        if (dungeon.isWalkable(nextPos)) {
+            playerPos = nextPos;
+        }
+
+        renderDungeon(dungeon, playerPos);
     }
 
     return 0;
