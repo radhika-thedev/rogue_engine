@@ -9,8 +9,7 @@
 enum class TileType {
     Empty,
     Wall,
-    Floor,
-    Player
+    Floor
 };
 
 struct Point {
@@ -30,6 +29,22 @@ struct PointHash {
         std::size_t h1 = std::hash<int>{}(p.x);
         std::size_t h2 = std::hash<int>{}(p.y);
         return h1 ^ (h2 * 0x9e3779b9 + (h1 << 6) + (h1 >> 2));
+    }
+};
+
+struct Enemy {
+    Point pos;
+    int hp;
+    bool alive;
+
+    Enemy(Point startPos, int startHp) 
+        : pos(startPos), hp(startHp), alive(true) {}
+
+    void takeDamage(int amount) {
+        hp -= amount;
+        if (hp <= 0) {
+            alive = false;
+        }
     }
 };
 
@@ -56,8 +71,7 @@ public:
     }
 
     bool isWalkable(const Point& p) const {
-        TileType t = getTile(p);
-        return (t == TileType::Floor);
+        return getTile(p) == TileType::Floor;
     }
 
     void markExplored(const Point& p) {
@@ -68,8 +82,6 @@ public:
         auto it = explored.find(p);
         return it != explored.end() && it->second;
     }
-
-    std::size_t totalOccupiedCells() const { return grid.size(); }
 };
 
 struct Rect {
@@ -114,7 +126,6 @@ void carveVerticalCorridor(int y1, int y2, int x, SpatialGrid& dungeon) {
     }
 }
 
-// Compute visibility and record explored tiles
 void updateFOV(SpatialGrid& dungeon, const Point& playerPos) {
     for (int dy = -FOV_RADIUS; dy <= FOV_RADIUS; ++dy) {
         for (int dx = -FOV_RADIUS; dx <= FOV_RADIUS; ++dx) {
@@ -128,34 +139,56 @@ void updateFOV(SpatialGrid& dungeon, const Point& playerPos) {
     }
 }
 
-void renderDungeon(const SpatialGrid& dungeon, const Point& playerPos) {
+void updateEnemyAI(Enemy& enemy, const Point& playerPos, const SpatialGrid& dungeon) {
+    if (!enemy.alive) return;
+
+    int dx = playerPos.x - enemy.pos.x;
+    int dy = playerPos.y - enemy.pos.y;
+    int distSq = dx * dx + dy * dy;
+
+    // Enemy only senses and chases when inside player visibility radius
+    if (distSq <= FOV_RADIUS * FOV_RADIUS) {
+        Point step = enemy.pos;
+
+        // Move along the dominant axis toward the player
+        if (std::abs(dx) >= std::abs(dy)) {
+            step.x += (dx > 0) ? 1 : -1;
+        } else {
+            step.y += (dy > 0) ? 1 : -1;
+        }
+
+        // Enemy moves only into empty floor tiles and cannot walk onto the player directly
+        if (dungeon.isWalkable(step) && !(step == playerPos)) {
+            enemy.pos = step;
+        }
+    }
+}
+
+void render(const SpatialGrid& dungeon, const Point& playerPos, const Enemy& enemy, const std::string& message) {
     std::cout << "\033[2J\033[H"; 
-    std::cout << "=== Roguelike Engine with FOV (Radius: " << FOV_RADIUS << ") ===\n";
-    std::cout << "WASD to Move | Q to Quit | Pos: (" << playerPos.x << ", " << playerPos.y << ")\n\n";
+    std::cout << "=== Roguelike Engine: Dynamic Enemy & Turn Loop ===\n";
+    std::cout << "WASD to Move/Attack | Q to Quit\n";
+    std::cout << "Status: " << message << "\n\n";
 
     for (int y = 0; y < MAP_HEIGHT; ++y) {
         for (int x = 0; x < MAP_WIDTH; ++x) {
             Point p(x, y);
 
-            if (p == playerPos) {
-                std::cout << "@";
-                continue;
-            }
-
             int dx = x - playerPos.x;
             int dy = y - playerPos.y;
             bool inView = (dx * dx + dy * dy <= FOV_RADIUS * FOV_RADIUS);
 
-            if (inView) {
-                // In direct line of sight
+            if (p == playerPos) {
+                std::cout << "@";
+            } else if (enemy.alive && p == enemy.pos && inView) {
+                std::cout << "E"; // Visible enemy
+            } else if (inView) {
                 TileType t = dungeon.getTile(p);
                 std::cout << (t == TileType::Floor ? "." : "#");
             } else if (dungeon.isExplored(p)) {
-                // Previously seen, but currently out of sight (Fog of War)
                 TileType t = dungeon.getTile(p);
                 std::cout << (t == TileType::Floor ? "," : "#");
             } else {
-                // Complete darkness
                 std::cout << " ";
             }
         }
@@ -212,8 +245,13 @@ int main() {
     }
 
     Point playerPos(rooms[0].centerX(), rooms[0].centerY());
+    // Spawn Enemy in the second room
+    Point enemyPos(rooms[1].centerX(), rooms[1].centerY());
+    Enemy goblin(enemyPos, 3); // 3 HP
+
     updateFOV(dungeon, playerPos);
-    renderDungeon(dungeon, playerPos);
+    std::string status = "Dungeon initialized. Explore corridors to locate enemies.";
+    render(dungeon, playerPos, goblin, status);
 
     bool running = true;
     while (running) {
@@ -226,16 +264,31 @@ int main() {
         else if (key == 'd' || key == 'D') nextPos.x += 1;
         else if (key == 'q' || key == 'Q') {
             running = false;
-            std::cout << "\nEngine Exited Cleanly.\n";
+            std::cout << "\nEngine Session Ended.\n";
             break;
+        } else {
+            continue; // Ignore invalid keys without burning a turn
         }
 
-        if (dungeon.isWalkable(nextPos)) {
+        // Bump-combat check: Moving directly into the enemy attacks it
+        if (goblin.alive && nextPos == goblin.pos) {
+            goblin.takeDamage(1);
+            if (!goblin.alive) {
+                status = "You struck the enemy for 1 DMG! Enemy defeated!";
+            } else {
+                status = "You struck the enemy! Enemy HP: " + std::to_string(goblin.hp);
+            }
+        } else if (dungeon.isWalkable(nextPos)) {
             playerPos = nextPos;
-            updateFOV(dungeon, playerPos);
+            status = "Moved to (" + std::to_string(playerPos.x) + ", " + std::to_string(playerPos.y) + ")";
+        } else {
+            status = "Path blocked by wall.";
         }
 
-        renderDungeon(dungeon, playerPos);
+        // Enemy turn
+        updateEnemyAI(goblin, playerPos, dungeon);
+        updateFOV(dungeon, playerPos);
+        render(dungeon, playerPos, goblin, status);
     }
 
     return 0;
