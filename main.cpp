@@ -1,6 +1,7 @@
 #include <iostream>
 #include <unordered_map>
 #include <vector>
+#include <queue>
 #include <algorithm>
 #include <random>
 #include <cstdint>
@@ -139,6 +140,46 @@ void updateFOV(SpatialGrid& dungeon, const Point& playerPos) {
     }
 }
 
+Point getNextBFSStep(const Point& start, const Point& target, const SpatialGrid& dungeon) {
+    if (start == target) return start;
+
+    std::queue<Point> frontier;
+    frontier.push(start);
+
+    std::unordered_map<Point, Point, PointHash> cameFrom;
+    cameFrom[start] = start;
+
+    bool found = false;
+    const Point directions[4] = { {0, -1}, {0, 1}, {-1, 0}, {1, 0} };
+
+    while (!frontier.empty()) {
+        Point current = frontier.front();
+        frontier.pop();
+
+        if (current == target) {
+            found = true;
+            break;
+        }
+
+        for (const auto& dir : directions) {
+            Point next(current.x + dir.x, current.y + dir.y);
+
+            if ((dungeon.isWalkable(next) || next == target) && cameFrom.find(next) == cameFrom.end()) {
+                frontier.push(next);
+                cameFrom[next] = current;
+            }
+        }
+    }
+
+    if (!found) return start;
+
+    Point curr = target;
+    while (!(cameFrom[curr] == start)) {
+        curr = cameFrom[curr];
+    }
+    return curr;
+}
+
 void updateEnemyAI(Enemy& enemy, const Point& playerPos, const SpatialGrid& dungeon) {
     if (!enemy.alive) return;
 
@@ -146,27 +187,18 @@ void updateEnemyAI(Enemy& enemy, const Point& playerPos, const SpatialGrid& dung
     int dy = playerPos.y - enemy.pos.y;
     int distSq = dx * dx + dy * dy;
 
-    // Enemy only senses and chases when inside player visibility radius
+    // Trigger shortest-path navigation once inside sight range
     if (distSq <= FOV_RADIUS * FOV_RADIUS) {
-        Point step = enemy.pos;
-
-        // Move along the dominant axis toward the player
-        if (std::abs(dx) >= std::abs(dy)) {
-            step.x += (dx > 0) ? 1 : -1;
-        } else {
-            step.y += (dy > 0) ? 1 : -1;
-        }
-
-        // Enemy moves only into empty floor tiles and cannot walk onto the player directly
-        if (dungeon.isWalkable(step) && !(step == playerPos)) {
-            enemy.pos = step;
+        Point nextStep = getNextBFSStep(enemy.pos, playerPos, dungeon);
+        if (dungeon.isWalkable(nextStep) && !(nextStep == playerPos)) {
+            enemy.pos = nextStep;
         }
     }
 }
 
 void render(const SpatialGrid& dungeon, const Point& playerPos, const Enemy& enemy, const std::string& message) {
     std::cout << "\033[2J\033[H"; 
-    std::cout << "=== Roguelike Engine: Dynamic Enemy & Turn Loop ===\n";
+    std::cout << "=== Roguelike Engine: BFS Shortest Path AI ===\n";
     std::cout << "WASD to Move/Attack | Q to Quit\n";
     std::cout << "Status: " << message << "\n\n";
 
@@ -181,7 +213,7 @@ void render(const SpatialGrid& dungeon, const Point& playerPos, const Enemy& ene
             if (p == playerPos) {
                 std::cout << "@";
             } else if (enemy.alive && p == enemy.pos && inView) {
-                std::cout << "E"; // Visible enemy
+                std::cout << "E";
             } else if (inView) {
                 TileType t = dungeon.getTile(p);
                 std::cout << (t == TileType::Floor ? "." : "#");
@@ -245,12 +277,11 @@ int main() {
     }
 
     Point playerPos(rooms[0].centerX(), rooms[0].centerY());
-    // Spawn Enemy in the second room
     Point enemyPos(rooms[1].centerX(), rooms[1].centerY());
-    Enemy goblin(enemyPos, 3); // 3 HP
+    Enemy goblin(enemyPos, 3);
 
     updateFOV(dungeon, playerPos);
-    std::string status = "Dungeon initialized. Explore corridors to locate enemies.";
+    std::string status = "Dungeon initialized. BFS pathfinding active.";
     render(dungeon, playerPos, goblin, status);
 
     bool running = true;
@@ -267,16 +298,15 @@ int main() {
             std::cout << "\nEngine Session Ended.\n";
             break;
         } else {
-            continue; // Ignore invalid keys without burning a turn
+            continue;
         }
 
-        // Bump-combat check: Moving directly into the enemy attacks it
         if (goblin.alive && nextPos == goblin.pos) {
             goblin.takeDamage(1);
             if (!goblin.alive) {
-                status = "You struck the enemy for 1 DMG! Enemy defeated!";
+                status = "Hit enemy for 1 DMG! Enemy defeated!";
             } else {
-                status = "You struck the enemy! Enemy HP: " + std::to_string(goblin.hp);
+                status = "Hit enemy! Enemy HP: " + std::to_string(goblin.hp);
             }
         } else if (dungeon.isWalkable(nextPos)) {
             playerPos = nextPos;
@@ -285,7 +315,6 @@ int main() {
             status = "Path blocked by wall.";
         }
 
-        // Enemy turn
         updateEnemyAI(goblin, playerPos, dungeon);
         updateFOV(dungeon, playerPos);
         render(dungeon, playerPos, goblin, status);
