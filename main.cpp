@@ -6,6 +6,7 @@
 #include <random>
 #include <cstdint>
 #include <conio.h>
+#include <string>
 
 enum class TileType {
     Empty,
@@ -33,13 +34,31 @@ struct PointHash {
     }
 };
 
+struct Player {
+    Point pos;
+    int hp;
+    int maxHp;
+
+    Player(Point startPos, int maxHealth) 
+        : pos(startPos), hp(maxHealth), maxHp(maxHealth) {}
+
+    void takeDamage(int amount) {
+        hp = std::max(0, hp - amount);
+    }
+
+    bool isAlive() const {
+        return hp > 0;
+    }
+};
+
 struct Enemy {
     Point pos;
     int hp;
+    int attackPower;
     bool alive;
 
-    Enemy(Point startPos, int startHp) 
-        : pos(startPos), hp(startHp), alive(true) {}
+    Enemy(Point startPos, int startHp, int atk) 
+        : pos(startPos), hp(startHp), attackPower(atk), alive(true) {}
 
     void takeDamage(int amount) {
         hp -= amount;
@@ -180,37 +199,43 @@ Point getNextBFSStep(const Point& start, const Point& target, const SpatialGrid&
     return curr;
 }
 
-void updateEnemyAI(Enemy& enemy, const Point& playerPos, const SpatialGrid& dungeon) {
+void updateEnemyTurn(Enemy& enemy, Player& player, const SpatialGrid& dungeon, std::string& combatLog) {
     if (!enemy.alive) return;
 
-    int dx = playerPos.x - enemy.pos.x;
-    int dy = playerPos.y - enemy.pos.y;
+    int dx = player.pos.x - enemy.pos.x;
+    int dy = player.pos.y - enemy.pos.y;
     int distSq = dx * dx + dy * dy;
 
-    // Trigger shortest-path navigation once inside sight range
+    // Check if directly adjacent (Manhattan distance == 1) to attack
+    if (std::abs(dx) + std::abs(dy) == 1) {
+        player.takeDamage(enemy.attackPower);
+        combatLog += " | Goblin strikes you for " + std::to_string(enemy.attackPower) + " DMG!";
+        return;
+    }
+
+    // Chase if within FOV radius
     if (distSq <= FOV_RADIUS * FOV_RADIUS) {
-        Point nextStep = getNextBFSStep(enemy.pos, playerPos, dungeon);
-        if (dungeon.isWalkable(nextStep) && !(nextStep == playerPos)) {
+        Point nextStep = getNextBFSStep(enemy.pos, player.pos, dungeon);
+        if (dungeon.isWalkable(nextStep) && !(nextStep == player.pos)) {
             enemy.pos = nextStep;
         }
     }
 }
 
-void render(const SpatialGrid& dungeon, const Point& playerPos, const Enemy& enemy, const std::string& message) {
+void render(const SpatialGrid& dungeon, const Player& player, const Enemy& enemy, const std::string& message) {
     std::cout << "\033[2J\033[H"; 
-    std::cout << "=== Roguelike Engine: BFS Shortest Path AI ===\n";
-    std::cout << "WASD to Move/Attack | Q to Quit\n";
-    std::cout << "Status: " << message << "\n\n";
+    std::cout << "=== Roguelike Engine: Player Stats & Combat HUD ===\n";
+    std::cout << "WASD: Move/Attack | Q: Quit\n\n";
 
     for (int y = 0; y < MAP_HEIGHT; ++y) {
         for (int x = 0; x < MAP_WIDTH; ++x) {
             Point p(x, y);
 
-            int dx = x - playerPos.x;
-            int dy = y - playerPos.y;
+            int dx = x - player.pos.x;
+            int dy = y - player.pos.y;
             bool inView = (dx * dx + dy * dy <= FOV_RADIUS * FOV_RADIUS);
 
-            if (p == playerPos) {
+            if (p == player.pos) {
                 std::cout << "@";
             } else if (enemy.alive && p == enemy.pos && inView) {
                 std::cout << "E";
@@ -226,6 +251,17 @@ void render(const SpatialGrid& dungeon, const Point& playerPos, const Enemy& ene
         }
         std::cout << "\n";
     }
+
+    // Persistent HUD pane
+    std::cout << "\n---------------------------------------------\n";
+    std::cout << "PLAYER HP: " << player.hp << " / " << player.maxHp << " [";
+    for (int i = 0; i < player.maxHp; ++i) {
+        if (i < player.hp) std::cout << "=";
+        else std::cout << " ";
+    }
+    std::cout << "] | Pos: (" << player.pos.x << ", " << player.pos.y << ")\n";
+    std::cout << "LOG: " << message << "\n";
+    std::cout << "---------------------------------------------\n";
 }
 
 int main() {
@@ -276,18 +312,17 @@ int main() {
         }
     }
 
-    Point playerPos(rooms[0].centerX(), rooms[0].centerY());
-    Point enemyPos(rooms[1].centerX(), rooms[1].centerY());
-    Enemy goblin(enemyPos, 3);
+    Player player(Point(rooms[0].centerX(), rooms[0].centerY()), 10); // 10 Max HP
+    Enemy goblin(Point(rooms[1].centerX(), rooms[1].centerY()), 3, 2); // 3 HP, 2 ATK
 
-    updateFOV(dungeon, playerPos);
-    std::string status = "Dungeon initialized. BFS pathfinding active.";
-    render(dungeon, playerPos, goblin, status);
+    updateFOV(dungeon, player.pos);
+    std::string combatLog = "Dungeon ready. Locate the enemy to test reciprocal combat.";
+    render(dungeon, player, goblin, combatLog);
 
     bool running = true;
-    while (running) {
+    while (running && player.isAlive()) {
         char key = _getch();
-        Point nextPos = playerPos;
+        Point nextPos = player.pos;
 
         if (key == 'w' || key == 'W') nextPos.y -= 1;
         else if (key == 's' || key == 'S') nextPos.y += 1;
@@ -301,23 +336,33 @@ int main() {
             continue;
         }
 
+        combatLog = "";
+
+        // Player turn
         if (goblin.alive && nextPos == goblin.pos) {
             goblin.takeDamage(1);
             if (!goblin.alive) {
-                status = "Hit enemy for 1 DMG! Enemy defeated!";
+                combatLog = "You dealt 1 DMG and defeated the Goblin!";
             } else {
-                status = "Hit enemy! Enemy HP: " + std::to_string(goblin.hp);
+                combatLog = "You hit Goblin! Goblin HP: " + std::to_string(goblin.hp);
             }
         } else if (dungeon.isWalkable(nextPos)) {
-            playerPos = nextPos;
-            status = "Moved to (" + std::to_string(playerPos.x) + ", " + std::to_string(playerPos.y) + ")";
+            player.pos = nextPos;
+            combatLog = "Moved forward.";
         } else {
-            status = "Path blocked by wall.";
+            combatLog = "Wall collision blocked movement.";
         }
 
-        updateEnemyAI(goblin, playerPos, dungeon);
-        updateFOV(dungeon, playerPos);
-        render(dungeon, playerPos, goblin, status);
+        // Enemy turn (reciprocal combat & AI)
+        updateEnemyTurn(goblin, player, dungeon, combatLog);
+        updateFOV(dungeon, player.pos);
+        render(dungeon, player, goblin, combatLog);
+
+        if (!player.isAlive()) {
+            std::cout << "\n*** YOU DIED! HP reached 0. Press Q to exit. ***\n";
+            while (_getch() != 'q');
+            break;
+        }
     }
 
     return 0;
