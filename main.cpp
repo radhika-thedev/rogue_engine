@@ -11,7 +11,8 @@
 enum class TileType {
     Empty,
     Wall,
-    Floor
+    Floor,
+    Stairs
 };
 
 struct Point {
@@ -94,6 +95,11 @@ private:
     std::unordered_map<Point, bool, PointHash> explored;
 
 public:
+    void clear() {
+        grid.clear();
+        explored.clear();
+    }
+
     void setTile(const Point& p, TileType type) {
         if (type == TileType::Empty) {
             grid.erase(p);
@@ -111,7 +117,8 @@ public:
     }
 
     bool isWalkable(const Point& p) const {
-        return getTile(p) == TileType::Floor;
+        TileType t = getTile(p);
+        return (t == TileType::Floor || t == TileType::Stairs);
     }
 
     void markExplored(const Point& p) {
@@ -253,10 +260,11 @@ void updateEnemies(std::vector<Enemy>& enemies, Player& player, const SpatialGri
     }
 }
 
-void render(const SpatialGrid& dungeon, const Player& player, const std::vector<Enemy>& enemies, const std::vector<Item>& items, const std::string& message) {
+void render(const SpatialGrid& dungeon, const Player& player, const std::vector<Enemy>& enemies, 
+            const std::vector<Item>& items, int currentFloor, const std::string& message) {
     std::cout << "\033[2J\033[H"; 
-    std::cout << "=== Roguelike Engine: Multi-Entity & Consumable Items ===\n";
-    std::cout << "WASD: Move/Attack | Q: Quit | Legend: @ Player, E Enemy, ! Health Potion\n\n";
+    std::cout << "=== Roguelike Engine: Floor " << currentFloor << " ===\n";
+    std::cout << "WASD: Move/Attack | Q: Quit | Legend: @ Player, E Enemy, ! Potion, > Stairs\n\n";
 
     for (int y = 0; y < MAP_HEIGHT; ++y) {
         for (int x = 0; x < MAP_WIDTH; ++x) {
@@ -271,7 +279,6 @@ void render(const SpatialGrid& dungeon, const Player& player, const std::vector<
             } else {
                 bool drawn = false;
 
-                // 1. Draw enemies in FOV
                 if (inView) {
                     for (const auto& enemy : enemies) {
                         if (enemy.alive && enemy.pos == p) {
@@ -282,7 +289,6 @@ void render(const SpatialGrid& dungeon, const Player& player, const std::vector<
                     }
                 }
 
-                // 2. Draw items in FOV
                 if (!drawn && inView) {
                     for (const auto& item : items) {
                         if (!item.collected && item.pos == p) {
@@ -293,14 +299,16 @@ void render(const SpatialGrid& dungeon, const Player& player, const std::vector<
                     }
                 }
 
-                // 3. Draw map tiles
                 if (!drawn) {
+                    TileType t = dungeon.getTile(p);
                     if (inView) {
-                        TileType t = dungeon.getTile(p);
-                        std::cout << (t == TileType::Floor ? "." : "#");
+                        if (t == TileType::Floor) std::cout << ".";
+                        else if (t == TileType::Stairs) std::cout << ">";
+                        else std::cout << "#";
                     } else if (dungeon.isExplored(p)) {
-                        TileType t = dungeon.getTile(p);
-                        std::cout << (t == TileType::Floor ? "," : "#");
+                        if (t == TileType::Floor) std::cout << ",";
+                        else if (t == TileType::Stairs) std::cout << ">";
+                        else std::cout << "#";
                     } else {
                         std::cout << " ";
                     }
@@ -316,19 +324,25 @@ void render(const SpatialGrid& dungeon, const Player& player, const std::vector<
     }
 
     std::cout << "\n-------------------------------------------------------------\n";
-    std::cout << "HP: " << player.hp << "/" << player.maxHp << " [";
+    std::cout << "DUNGEON LEVEL: " << currentFloor 
+              << " | HP: " << player.hp << "/" << player.maxHp << " [";
     for (int i = 0; i < player.maxHp; ++i) {
         if (i < player.hp) std::cout << "=";
         else std::cout << " ";
     }
-    std::cout << "] | Pos: (" << player.pos.x << ", " << player.pos.y << ") | Enemies Left: " << aliveCount << "\n";
+    std::cout << "] | Pos: (" << player.pos.x << ", " << player.pos.y 
+              << ") | Enemies Left: " << aliveCount << "\n";
     std::cout << "LOG: " << message << "\n";
     std::cout << "-------------------------------------------------------------\n";
 }
 
-int main() {
-    SpatialGrid dungeon;
-    std::mt19937 rng(1337);
+void generateFloor(int floorNum, SpatialGrid& dungeon, Player& player, 
+                   std::vector<Enemy>& enemies, std::vector<Item>& items, 
+                   Point& stairsPos, std::mt19937& rng) {
+    dungeon.clear();
+    enemies.clear();
+    items.clear();
+
     std::uniform_int_distribution<int> distX(2, MAP_WIDTH - 10);
     std::uniform_int_distribution<int> distY(2, MAP_HEIGHT - 8);
     std::uniform_int_distribution<int> distSize(4, 7);
@@ -374,27 +388,44 @@ int main() {
         }
     }
 
-    Player player(Point(rooms[0].centerX(), rooms[0].centerY()), 12);
+    // Set player position to room 0 center
+    player.pos = Point(rooms[0].centerX(), rooms[0].centerY());
 
-    // Spawner: 1 enemy per non-spawn room
-    std::vector<Enemy> enemies;
-    for (std::size_t i = 1; i < rooms.size(); ++i) {
-        enemies.emplace_back(static_cast<int>(i), Point(rooms[i].centerX(), rooms[i].centerY()), 3, 2);
+    // Place stairs in the last room
+    stairsPos = Point(rooms.back().centerX(), rooms.back().centerY());
+    dungeon.setTile(stairsPos, TileType::Stairs);
+
+    // Spawn scaled enemies in intermediate rooms
+    for (std::size_t i = 1; i < rooms.size() - 1; ++i) {
+        int enemyHp = 3 + (floorNum - 1);
+        int enemyAtk = 1 + (floorNum / 2);
+        enemies.emplace_back(static_cast<int>(i), Point(rooms[i].centerX(), rooms[i].centerY()), enemyHp, enemyAtk);
     }
 
-    // Spawner: Place health potions (!) in odd-indexed rooms
-    std::vector<Item> items;
+    // Spawn potions
     int itemIdCounter = 1;
     for (std::size_t i = 1; i < rooms.size(); i += 2) {
-        // Place potion slightly offset from the room center
         Point itemPos(rooms[i].x + 1, rooms[i].y + 1);
         items.emplace_back(itemIdCounter++, itemPos, ItemType::HealthPotion, 4);
     }
 
     updateFOV(dungeon, player.pos);
-    std::string combatLog = "Dungeon initialized with " + std::to_string(enemies.size()) + 
-                            " enemies and " + std::to_string(items.size()) + " health potions.";
-    render(dungeon, player, enemies, items, combatLog);
+}
+
+int main() {
+    SpatialGrid dungeon;
+    std::mt19937 rng(1337);
+
+    Player player(Point(0, 0), 14);
+    std::vector<Enemy> enemies;
+    std::vector<Item> items;
+    Point stairsPos;
+    int currentFloor = 1;
+
+    generateFloor(currentFloor, dungeon, player, enemies, items, stairsPos, rng);
+
+    std::string combatLog = "Entered Floor 1. Find the stairs (>) to descend.";
+    render(dungeon, player, enemies, items, currentFloor, combatLog);
 
     bool running = true;
     while (running && player.isAlive()) {
@@ -415,7 +446,7 @@ int main() {
 
         combatLog = "";
 
-        // Player Phase: Attack Check
+        // Check for attack
         Enemy* targetEnemy = nullptr;
         for (auto& enemy : enemies) {
             if (enemy.alive && enemy.pos == nextPos) {
@@ -427,36 +458,44 @@ int main() {
         if (targetEnemy) {
             targetEnemy->takeDamage(1);
             if (!targetEnemy->alive) {
-                combatLog = "You defeated Enemy #" + std::to_string(targetEnemy->id) + "!";
+                combatLog = "Defeated Enemy #" + std::to_string(targetEnemy->id) + "!";
             } else {
-                combatLog = "Hit Enemy #" + std::to_string(targetEnemy->id) + "! HP left: " + std::to_string(targetEnemy->hp);
+                combatLog = "Hit Enemy #" + std::to_string(targetEnemy->id) + "! HP: " + std::to_string(targetEnemy->hp);
             }
         } else if (dungeon.isWalkable(nextPos)) {
             player.pos = nextPos;
             combatLog = "Moved.";
 
-            // Item Collection Check
+            // Item collection
             for (auto& item : items) {
                 if (!item.collected && item.pos == player.pos) {
                     if (item.type == ItemType::HealthPotion) {
                         player.heal(item.value);
                         item.collected = true;
-                        combatLog = "Picked up Health Potion! Restored " + std::to_string(item.value) + " HP.";
+                        combatLog = "Used Health Potion (+ " + std::to_string(item.value) + " HP).";
                     }
                     break;
                 }
+            }
+
+            // Descend stairs check
+            if (player.pos == stairsPos) {
+                currentFloor++;
+                generateFloor(currentFloor, dungeon, player, enemies, items, stairsPos, rng);
+                combatLog = "Descended to Floor " + std::to_string(currentFloor) + "! Enemies grow stronger.";
+                render(dungeon, player, enemies, items, currentFloor, combatLog);
+                continue;
             }
         } else {
             combatLog = "Wall blocked movement.";
         }
 
-        // Enemy Phase: Update all active enemies
         updateEnemies(enemies, player, dungeon, combatLog);
         updateFOV(dungeon, player.pos);
-        render(dungeon, player, enemies, items, combatLog);
+        render(dungeon, player, enemies, items, currentFloor, combatLog);
 
         if (!player.isAlive()) {
-            std::cout << "\n*** YOU DIED! Press Q to exit. ***\n";
+            std::cout << "\n*** YOU DIED ON FLOOR " << currentFloor << "! Press Q to exit. ***\n";
             while (_getch() != 'q');
             break;
         }
