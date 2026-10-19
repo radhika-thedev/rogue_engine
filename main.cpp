@@ -46,6 +46,10 @@ struct Player {
         hp = std::max(0, hp - amount);
     }
 
+    void heal(int amount) {
+        hp = std::min(maxHp, hp + amount);
+    }
+
     bool isAlive() const {
         return hp > 0;
     }
@@ -67,6 +71,21 @@ struct Enemy {
             alive = false;
         }
     }
+};
+
+enum class ItemType {
+    HealthPotion
+};
+
+struct Item {
+    int id;
+    Point pos;
+    ItemType type;
+    int value;
+    bool collected;
+
+    Item(int itemId, Point p, ItemType t, int val)
+        : id(itemId), pos(p), type(t), value(val), collected(false) {}
 };
 
 class SpatialGrid {
@@ -160,7 +179,6 @@ void updateFOV(SpatialGrid& dungeon, const Point& playerPos) {
     }
 }
 
-// Check if a point is occupied by any living enemy
 bool isTileOccupiedByEnemy(const Point& p, const std::vector<Enemy>& enemies) {
     for (const auto& enemy : enemies) {
         if (enemy.alive && enemy.pos == p) {
@@ -194,9 +212,7 @@ Point getNextBFSStep(const Point& start, const Point& target, const SpatialGrid&
         for (const auto& dir : directions) {
             Point next(current.x + dir.x, current.y + dir.y);
 
-            // Tile is valid if walkable and not already visited in BFS
             if ((dungeon.isWalkable(next) || next == target) && cameFrom.find(next) == cameFrom.end()) {
-                // Enemies treat other living enemies as obstacles unless it's the target tile
                 if (next == target || !isTileOccupiedByEnemy(next, enemies)) {
                     frontier.push(next);
                     cameFrom[next] = current;
@@ -222,14 +238,12 @@ void updateEnemies(std::vector<Enemy>& enemies, Player& player, const SpatialGri
         int dy = player.pos.y - enemy.pos.y;
         int distSq = dx * dx + dy * dy;
 
-        // If adjacent to the player, execute an attack
         if (std::abs(dx) + std::abs(dy) == 1) {
             player.takeDamage(enemy.attackPower);
             combatLog += " | Enemy #" + std::to_string(enemy.id) + " hit you for " + std::to_string(enemy.attackPower) + " DMG!";
             continue;
         }
 
-        // If inside the visibility radius, pathfind toward the player
         if (distSq <= FOV_RADIUS * FOV_RADIUS) {
             Point nextStep = getNextBFSStep(enemy.pos, player.pos, dungeon, enemies);
             if (dungeon.isWalkable(nextStep) && !(nextStep == player.pos) && !isTileOccupiedByEnemy(nextStep, enemies)) {
@@ -239,10 +253,10 @@ void updateEnemies(std::vector<Enemy>& enemies, Player& player, const SpatialGri
     }
 }
 
-void render(const SpatialGrid& dungeon, const Player& player, const std::vector<Enemy>& enemies, const std::string& message) {
+void render(const SpatialGrid& dungeon, const Player& player, const std::vector<Enemy>& enemies, const std::vector<Item>& items, const std::string& message) {
     std::cout << "\033[2J\033[H"; 
-    std::cout << "=== Roguelike Engine: Multi-Entity Manager ===\n";
-    std::cout << "WASD: Move/Attack | Q: Quit\n\n";
+    std::cout << "=== Roguelike Engine: Multi-Entity & Consumable Items ===\n";
+    std::cout << "WASD: Move/Attack | Q: Quit | Legend: @ Player, E Enemy, ! Health Potion\n\n";
 
     for (int y = 0; y < MAP_HEIGHT; ++y) {
         for (int x = 0; x < MAP_WIDTH; ++x) {
@@ -255,19 +269,32 @@ void render(const SpatialGrid& dungeon, const Player& player, const std::vector<
             if (p == player.pos) {
                 std::cout << "@";
             } else {
-                // Check if any visible enemy occupies this tile
-                bool enemyRendered = false;
+                bool drawn = false;
+
+                // 1. Draw enemies in FOV
                 if (inView) {
                     for (const auto& enemy : enemies) {
                         if (enemy.alive && enemy.pos == p) {
                             std::cout << "E";
-                            enemyRendered = true;
+                            drawn = true;
                             break;
                         }
                     }
                 }
 
-                if (!enemyRendered) {
+                // 2. Draw items in FOV
+                if (!drawn && inView) {
+                    for (const auto& item : items) {
+                        if (!item.collected && item.pos == p) {
+                            std::cout << "!";
+                            drawn = true;
+                            break;
+                        }
+                    }
+                }
+
+                // 3. Draw map tiles
+                if (!drawn) {
                     if (inView) {
                         TileType t = dungeon.getTile(p);
                         std::cout << (t == TileType::Floor ? "." : "#");
@@ -283,7 +310,6 @@ void render(const SpatialGrid& dungeon, const Player& player, const std::vector<
         std::cout << "\n";
     }
 
-    // Persistent HUD pane
     int aliveCount = 0;
     for (const auto& e : enemies) {
         if (e.alive) aliveCount++;
@@ -350,15 +376,25 @@ int main() {
 
     Player player(Point(rooms[0].centerX(), rooms[0].centerY()), 12);
 
-    // Multi-Entity Spawner: Spawn one enemy in every room except the player's spawn room
+    // Spawner: 1 enemy per non-spawn room
     std::vector<Enemy> enemies;
     for (std::size_t i = 1; i < rooms.size(); ++i) {
         enemies.emplace_back(static_cast<int>(i), Point(rooms[i].centerX(), rooms[i].centerY()), 3, 2);
     }
 
+    // Spawner: Place health potions (!) in odd-indexed rooms
+    std::vector<Item> items;
+    int itemIdCounter = 1;
+    for (std::size_t i = 1; i < rooms.size(); i += 2) {
+        // Place potion slightly offset from the room center
+        Point itemPos(rooms[i].x + 1, rooms[i].y + 1);
+        items.emplace_back(itemIdCounter++, itemPos, ItemType::HealthPotion, 4);
+    }
+
     updateFOV(dungeon, player.pos);
-    std::string combatLog = "Dungeon populated with " + std::to_string(enemies.size()) + " hostile entities.";
-    render(dungeon, player, enemies, combatLog);
+    std::string combatLog = "Dungeon initialized with " + std::to_string(enemies.size()) + 
+                            " enemies and " + std::to_string(items.size()) + " health potions.";
+    render(dungeon, player, enemies, items, combatLog);
 
     bool running = true;
     while (running && player.isAlive()) {
@@ -379,7 +415,7 @@ int main() {
 
         combatLog = "";
 
-        // Player Phase: Check if bumping into any living enemy
+        // Player Phase: Attack Check
         Enemy* targetEnemy = nullptr;
         for (auto& enemy : enemies) {
             if (enemy.alive && enemy.pos == nextPos) {
@@ -398,6 +434,18 @@ int main() {
         } else if (dungeon.isWalkable(nextPos)) {
             player.pos = nextPos;
             combatLog = "Moved.";
+
+            // Item Collection Check
+            for (auto& item : items) {
+                if (!item.collected && item.pos == player.pos) {
+                    if (item.type == ItemType::HealthPotion) {
+                        player.heal(item.value);
+                        item.collected = true;
+                        combatLog = "Picked up Health Potion! Restored " + std::to_string(item.value) + " HP.";
+                    }
+                    break;
+                }
+            }
         } else {
             combatLog = "Wall blocked movement.";
         }
@@ -405,7 +453,7 @@ int main() {
         // Enemy Phase: Update all active enemies
         updateEnemies(enemies, player, dungeon, combatLog);
         updateFOV(dungeon, player.pos);
-        render(dungeon, player, enemies, combatLog);
+        render(dungeon, player, enemies, items, combatLog);
 
         if (!player.isAlive()) {
             std::cout << "\n*** YOU DIED! Press Q to exit. ***\n";
